@@ -1,0 +1,11 @@
+# Compiled binary from `go build`
+dir-ingest
+dir-ingest.exe
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE configuration
+.vscode/
+.idea/

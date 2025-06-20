@@ -36,10 +36,11 @@ dir-ingest -p my-project/
 | `-m` | Format as Markdown. | `false` |
 | `-c` | Format as Claude XML. | `false` |
 | `-p` | Prepend a path to all filenames in the output. | |
-| `-i` | Glob pattern to include files (overrides defaults). | (see below) |
-| `-e` | Glob pattern to exclude files/dirs. | |
+| `-i` | Glob pattern to include files (overrides defaults). Can be used multiple times. | (see below) |
+| `-e` | Glob pattern to exclude files/dirs. Can be used multiple times. | |
+| `-xe` | File extension to exclude (e.g., `.html`). Can be used multiple times. | |
 | `-s` | Max file size in KB. | `25` |
 
-**Default included extensions:** `.go`, `.py`, `.js`, `.ts`, `.java`, `.c`, `.h`, `.cpp`, `.cs`, `.rs`, `.rb`, `.php`, `.swift`, `.kt`, `.kts`, `.scala`, `.pl`, `.sh`, `.html`, `.css`, `.scss`, `.json`, `.yaml`, `.yml`, `.xml`, `.toml`, `.md`, `.txt`, `.sql`
+**Default included extensions:** `.go`, `.py`, `.js`, `.ts`, `.tsx`, `.java`, `.c`, `.h`, `.cpp`, `.cs`, `.rs`, `.rb`, `.php`, `.swift`, `.kt`, `.kts`, `.scala`, `.pl`, `.sh`, `.html`, `.css`, `.scss`, `.json`, `.yaml`, `.yml`, `.xml`, `.toml`, `.md`, `.txt`, `.sql`
 
 Inspiration for this tool comes from [gitingest](https://github.com/cyclotruc/gitingest) by [@cyclotruc](https://github.com/cyclotruc).

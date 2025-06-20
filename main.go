@@ -28,14 +28,14 @@ type fileData struct {
 var (
 	// defaultExtensions defines files to include by extension (case-insensitive).
 	defaultExtensions = map[string]bool{
-		".go": true, ".py": true, ".js": true, ".ts": true, ".java": true, ".c": true, ".h": true, ".cpp": true, ".cs": true, ".rs": true, ".rb": true, ".php": true, ".swift": true, ".kt": true, ".kts": true, ".scala": true, ".pl": true, ".pm": true, ".sh": true,
+		".go": true, ".py": true, ".js": true, ".ts": true, ".tsx": true, ".java": true, ".c": true, ".h": true, ".cpp": true, ".cs": true, ".rs": true, ".rb": true, ".php": true, ".swift": true, ".kt": true, ".kts": true, ".scala": true, ".pl": true, ".pm": true, ".sh": true,
 		".html": true, ".css": true, ".scss": true, ".less": true,
 		".json": true, ".yaml": true, ".yml": true, ".xml": true, ".toml": true, ".ini": true, ".env": true,
 		".md": true, ".txt": true, ".rst": true, ".sql": true,
 	}
 	// languageExtMap provides language hints for Markdown formatting based on extension.
 	languageExtMap = map[string]string{
-		".go": "go", ".py": "python", ".js": "javascript", ".ts": "typescript", ".java": "java", ".c": "c", ".h": "c", ".cpp": "cpp", ".cs": "csharp", ".rs": "rust", ".rb": "ruby", ".php": "php", ".swift": "swift", ".kt": "kotlin", ".kts": "kotlin", ".scala": "scala", ".pl": "perl", ".sh": "bash",
+		".go": "go", ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".java": "java", ".c": "c", ".h": "c", ".cpp": "cpp", ".cs": "csharp", ".rs": "rust", ".rb": "ruby", ".php": "php", ".swift": "swift", ".kt": "kotlin", ".kts": "kotlin", ".scala": "scala", ".pl": "perl", ".sh": "bash",
 		".html": "html", ".css": "css", ".scss": "scss", ".less": "less",
 		".json": "json", ".yaml": "yaml", ".yml": "yaml", ".xml": "xml", ".toml": "toml", ".ini": "ini", ".env": "bash", ".md": "markdown", ".txt": "text", ".rst": "rst", ".sql": "sql",
 	}
@@ -47,13 +47,14 @@ func main() {
 	// Use a custom flag set to allow parsing after positional args.
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
-	var includes, excludes stringSlice
+	var includes, excludes, excludeExts stringSlice
 	sizeLimitKB := flagSet.Int("s", 25, "Max file size in kilobytes (KB).")
 	useClaudeXML := flagSet.Bool("c", false, "Format as Claude XML.")
 	useMarkdown := flagSet.Bool("m", false, "Format as Markdown code blocks.")
 	prependPath := flagSet.String("p", "", "Prepend a path to all filenames in the output.")
-	flagSet.Var(&includes, "i", "Glob pattern to include files (overrides defaults).")
-	flagSet.Var(&excludes, "e", "Glob pattern to exclude files/dirs.")
+	flagSet.Var(&includes, "i", "Glob pattern to include files (overrides defaults). Can be used multiple times.")
+	flagSet.Var(&excludes, "e", "Glob pattern to exclude files/dirs. Can be used multiple times.")
+	flagSet.Var(&excludeExts, "xe", "File extension to exclude (e.g., .html). Can be used multiple times.")
 	flagSet.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] [directory]\n\n", os.Args[0])
 		fmt.Fprintln(os.Stderr, "Combines directory contents into a single file for LLMs.")
@@ -113,6 +114,16 @@ func main() {
 		log.Fatalf("Error getting absolute path for %q: %v", rootDir, err)
 	}
 
+	// Prepare a map for fast lookup of excluded extensions.
+	excludedExtsMap := make(map[string]bool)
+	for _, ext := range excludeExts {
+		ext = strings.ToLower(ext)
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		excludedExtsMap[ext] = true
+	}
+
 	var files []fileData
 	var skippedFiles []string
 	maxSizeBytes := int64(*sizeLimitKB) * 1024
@@ -140,6 +151,9 @@ func main() {
 			return nil
 		}
 
+		// --- Start of prioritized skip logic ---
+
+		// 1. Check for exclusion by glob pattern (-e).
 		for _, pattern := range excludes {
 			if matched, _ := filepath.Match(pattern, relPath); matched {
 				skippedFiles = append(skippedFiles, fmt.Sprintf("%s (excluded by pattern)", relPath))
@@ -147,20 +161,15 @@ func main() {
 			}
 		}
 
-		info, err := d.Info()
-		if err != nil {
-			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (error getting info)", relPath))
-			return nil
-		}
-		if info.Size() > maxSizeBytes {
-			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (too large: %dKB > %dKB)", relPath, info.Size()/1024, *sizeLimitKB))
-			return nil
-		}
-		if info.Size() == 0 {
-			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (empty)", relPath))
+		fileExt := strings.ToLower(filepath.Ext(relPath))
+
+		// 2. Check for exclusion by extension type (-xe).
+		if excludedExtsMap[fileExt] {
+			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (extension excluded by -xe)", relPath))
 			return nil
 		}
 
+		// 3. Check for inclusion (by pattern or default extension).
 		isIncluded := false
 		if len(includes) > 0 {
 			for _, pattern := range includes {
@@ -170,21 +179,42 @@ func main() {
 				}
 			}
 		} else {
-			isIncluded = defaultExtensions[strings.ToLower(filepath.Ext(relPath))]
+			isIncluded = defaultExtensions[fileExt]
 		}
 
-		if isIncluded {
-			content, err := os.ReadFile(path)
-			if err != nil {
-				skippedFiles = append(skippedFiles, fmt.Sprintf("%s (unreadable)", relPath))
-				return nil
-			}
-			files = append(files, fileData{path: filepath.ToSlash(relPath), content: content})
-		} else {
-			if len(includes) == 0 { // Only log if not using custom includes to avoid verbosity
+		if !isIncluded {
+			if len(includes) == 0 { // Only log if not using custom includes to avoid verbosity.
 				skippedFiles = append(skippedFiles, fmt.Sprintf("%s (unsupported extension)", relPath))
 			}
+			return nil
 		}
+
+		// At this point, the file is included based on its type/name.
+		// Now check other constraints like size and emptiness.
+		info, err := d.Info()
+		if err != nil {
+			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (error getting info)", relPath))
+			return nil
+		}
+		// 4. Check size.
+		if info.Size() > maxSizeBytes {
+			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (too large: %dKB > %dKB)", relPath, info.Size()/1024, *sizeLimitKB))
+			return nil
+		}
+		// 5. Check if empty.
+		if info.Size() == 0 {
+			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (empty)", relPath))
+			return nil
+		}
+
+		// All checks passed, read the file.
+		content, err := os.ReadFile(path)
+		if err != nil {
+			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (unreadable)", relPath))
+			return nil
+		}
+		files = append(files, fileData{path: filepath.ToSlash(relPath), content: content})
+
 		return nil
 	})
 

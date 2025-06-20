@@ -20,9 +20,14 @@ dir-ingest -m | xclip -selection clipboard # Linux (X11)
 dir-ingest -m | pbcopy # macOS
 dir-ingest -m | Set-Clipboard # Windows
 
-# Ingest a specific directory with plain text output
-dir-ingest /path/to/project
+# Ingest a specific directory and put flags after the path
+dir-ingest /path/to/project -m
+
+# Prepend a path to all filenames in the output
+dir-ingest -p my-project/
 ```
+
+> **Note:** Status messages (like skipped files or the final count) are printed to your terminal's standard error stream. This is intentional, so they appear on your screen for feedback but are **not** copied to your clipboard, which only receives the clean file content.
 
 ## Options
 
@@ -30,6 +35,7 @@ dir-ingest /path/to/project
 | :--- | :--- | :--- |
 | `-m` | Format as Markdown. | `false` |
 | `-c` | Format as Claude XML. | `false` |
+| `-p` | Prepend a path to all filenames in the output. | |
 | `-i` | Glob pattern to include files (overrides defaults). | (see below) |
 | `-e` | Glob pattern to exclude files/dirs. | |
 | `-s` | Max file size in KB. | `25` |

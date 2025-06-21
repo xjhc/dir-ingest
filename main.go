@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	gitignore "github.com/sabhiram/go-gitignore"
 )
 
 type stringSlice []string
@@ -26,18 +28,11 @@ type fileData struct {
 }
 
 var (
-	// defaultExtensions defines files to include by extension (case-insensitive).
-	defaultExtensions = map[string]bool{
-		".go": true, ".py": true, ".js": true, ".ts": true, ".tsx": true, ".java": true, ".c": true, ".h": true, ".cpp": true, ".cs": true, ".rs": true, ".rb": true, ".php": true, ".swift": true, ".kt": true, ".kts": true, ".scala": true, ".pl": true, ".pm": true, ".sh": true,
-		".html": true, ".css": true, ".scss": true, ".less": true,
-		".json": true, ".yaml": true, ".yml": true, ".xml": true, ".toml": true, ".ini": true, ".env": true,
-		".md": true, ".txt": true, ".rst": true, ".sql": true,
-	}
 	// languageExtMap provides language hints for Markdown formatting based on extension.
 	languageExtMap = map[string]string{
 		".go": "go", ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "tsx", ".java": "java", ".c": "c", ".h": "c", ".cpp": "cpp", ".cs": "csharp", ".rs": "rust", ".rb": "ruby", ".php": "php", ".swift": "swift", ".kt": "kotlin", ".kts": "kotlin", ".scala": "scala", ".pl": "perl", ".sh": "bash",
 		".html": "html", ".css": "css", ".scss": "scss", ".less": "less",
-		".json": "json", ".yaml": "yaml", ".yml": "yaml", ".xml": "xml", ".toml": "toml", ".ini": "ini", ".env": "bash", ".md": "markdown", ".txt": "text", ".rst": "rst", ".sql": "sql",
+		".json": "json", ".yaml": "yaml", ".yml": "yaml", ".xml": "xml", ".toml": "toml", ".ini": "ini", ".md": "markdown", ".txt": "text", ".rst": "rst", ".sql": "sql",
 	}
 )
 
@@ -47,17 +42,18 @@ func main() {
 	// Use a custom flag set to allow parsing after positional args.
 	flagSet := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
-	var includes, excludes, excludeExts stringSlice
+	var excludeExts stringSlice
+	gitignorePath := flagSet.String("g", "", "Path to a .gitignore-style file for exclusion rules. Defaults to ./.gitignore if it exists.")
+	langOnly := flagSet.Bool("x", false, "Only include files with recognized source code extensions.")
+	flagSet.Var(&excludeExts, "xe", "Extra file extensions to exclude (e.g., .log). Can be used multiple times.")
 	sizeLimitKB := flagSet.Int("s", 25, "Max file size in kilobytes (KB).")
-	useClaudeXML := flagSet.Bool("c", false, "Format as Claude XML.")
 	useMarkdown := flagSet.Bool("m", false, "Format as Markdown code blocks.")
+	useClaudeXML := flagSet.Bool("c", false, "Format as Claude XML.")
 	prependPath := flagSet.String("p", "", "Prepend a path to all filenames in the output.")
-	flagSet.Var(&includes, "i", "Glob pattern to include files (overrides defaults). Can be used multiple times.")
-	flagSet.Var(&excludes, "e", "Glob pattern to exclude files/dirs. Can be used multiple times.")
-	flagSet.Var(&excludeExts, "xe", "File extension to exclude (e.g., .html). Can be used multiple times.")
+	verbose := flagSet.Bool("v", false, "Verbose output: displays all files that were copied.")
 	flagSet.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] [directory]\n\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "Combines directory contents into a single file for LLMs.")
+		fmt.Fprintln(os.Stderr, "Combines directory contents into a single file for LLMs using .gitignore-style exclusions.")
 		fmt.Fprintln(os.Stderr, "\nOptions:")
 		flagSet.PrintDefaults()
 	}
@@ -74,22 +70,17 @@ func main() {
 		}
 
 		flagArgs = append(flagArgs, arg)
-		// Handle flags that take a value (e.g., -s 50)
-		// This is a heuristic; it assumes a value flag is not a boolean
-		// and the next arg doesn't start with a '-'
 		if !strings.Contains(arg, "=") {
 			flagName := strings.TrimLeft(arg, "-")
 			f := flagSet.Lookup(flagName)
 			if f != nil {
-				// Check if the flag is a boolean type
 				isBool := false
 				if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok {
 					isBool = b.IsBoolFlag()
 				}
-				// If not a bool, it expects a value
 				if !isBool && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 					flagArgs = append(flagArgs, args[i+1])
-					i++ // Consume the value
+					i++
 				}
 			}
 		}
@@ -114,6 +105,23 @@ func main() {
 		log.Fatalf("Error getting absolute path for %q: %v", rootDir, err)
 	}
 
+	// Initialize gitignore parser
+	var ignorer gitignore.IgnoreParser
+	// If -g is not provided, default to .gitignore in the root directory.
+	if *gitignorePath == "" {
+		*gitignorePath = filepath.Join(absRootDir, ".gitignore")
+	}
+	// Check if the ignore file exists and compile it.
+	if _, err := os.Stat(*gitignorePath); err == nil {
+		ignorer, err = gitignore.CompileIgnoreFile(*gitignorePath)
+		if err != nil {
+			log.Fatalf("Error compiling ignore file %q: %v", *gitignorePath, err)
+		}
+		log.Printf("Using ignore file: %s", *gitignorePath)
+	} else {
+		log.Println("No .gitignore file found or specified. Proceeding with basic filters.")
+	}
+
 	// Prepare a map for fast lookup of excluded extensions.
 	excludedExtsMap := make(map[string]bool)
 	for _, ext := range excludeExts {
@@ -133,75 +141,62 @@ func main() {
 			return err
 		}
 		relPath, _ := filepath.Rel(absRootDir, path)
+		if relPath == "." {
+			return nil
+		}
 
 		if d.IsDir() {
 			name := d.Name()
 			if name == ".git" || name == ".hg" || name == ".svn" || name == "node_modules" {
 				return filepath.SkipDir
 			}
-			for _, pattern := range excludes {
-				if matched, _ := filepath.Match(pattern, relPath); matched {
-					return filepath.SkipDir
-				}
+		}
+
+		// --- Filtering Logic ---
+		// 1. Gitignore check
+		if ignorer != nil && ignorer.MatchesPath(relPath) {
+			reason := "excluded by ignore file"
+			// To be more user-friendly, check if it's a directory to give a better message.
+			if d.IsDir() {
+				skippedFiles = append(skippedFiles, fmt.Sprintf("%s/ (%s)", relPath, reason))
+				return filepath.SkipDir
 			}
+			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (%s)", relPath, reason))
+			return nil
+		}
+		if d.IsDir() { // No need to process dirs further
 			return nil
 		}
 
 		if !d.Type().IsRegular() {
 			return nil
 		}
-
-		// --- Start of prioritized skip logic ---
-
-		// 1. Check for exclusion by glob pattern (-e).
-		for _, pattern := range excludes {
-			if matched, _ := filepath.Match(pattern, relPath); matched {
-				skippedFiles = append(skippedFiles, fmt.Sprintf("%s (excluded by pattern)", relPath))
-				return nil
-			}
-		}
-
 		fileExt := strings.ToLower(filepath.Ext(relPath))
 
-		// 2. Check for exclusion by extension type (-xe).
+		// 2. Exclusion by extension (-xe)
 		if excludedExtsMap[fileExt] {
 			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (extension excluded by -xe)", relPath))
 			return nil
 		}
 
-		// 3. Check for inclusion (by pattern or default extension).
-		isIncluded := false
-		if len(includes) > 0 {
-			for _, pattern := range includes {
-				if matched, _ := filepath.Match(pattern, relPath); matched {
-					isIncluded = true
-					break
-				}
+		// 3. Language-only filter (-x)
+		if *langOnly {
+			if _, isLang := languageExtMap[fileExt]; !isLang {
+				skippedFiles = append(skippedFiles, fmt.Sprintf("%s (not a recognized source file with -x)", relPath))
+				return nil
 			}
-		} else {
-			isIncluded = defaultExtensions[fileExt]
 		}
 
-		if !isIncluded {
-			if len(includes) == 0 { // Only log if not using custom includes to avoid verbosity.
-				skippedFiles = append(skippedFiles, fmt.Sprintf("%s (unsupported extension)", relPath))
-			}
-			return nil
-		}
-
-		// At this point, the file is included based on its type/name.
-		// Now check other constraints like size and emptiness.
+		// 4. Size and empty file checks.
 		info, err := d.Info()
 		if err != nil {
 			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (error getting info)", relPath))
 			return nil
 		}
-		// 4. Check size.
 		if info.Size() > maxSizeBytes {
 			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (too large: %dKB > %dKB)", relPath, info.Size()/1024, *sizeLimitKB))
 			return nil
 		}
-		// 5. Check if empty.
 		if info.Size() == 0 {
 			skippedFiles = append(skippedFiles, fmt.Sprintf("%s (empty)", relPath))
 			return nil
@@ -222,15 +217,6 @@ func main() {
 		log.Fatalf("Error walking directory %q: %v", rootDir, err)
 	}
 
-	if len(skippedFiles) > 0 {
-		sort.Strings(skippedFiles)
-		log.Printf("Skipped %d files:\n", len(skippedFiles))
-		for _, msg := range skippedFiles {
-			log.Printf("- %s\n", msg)
-		}
-		log.Println() // Add a blank line for separation
-	}
-
 	// Sort files to ensure README.md comes first, then by path.
 	sort.Slice(files, func(i, j int) bool {
 		isReadmeI := strings.EqualFold(filepath.Base(files[i].path), "readme.md")
@@ -241,6 +227,25 @@ func main() {
 		return files[i].path < files[j].path
 	})
 
+	// --- Reporting ---
+	if len(skippedFiles) > 0 {
+		sort.Strings(skippedFiles)
+		log.Printf("Skipped %d files/dirs:\n", len(skippedFiles))
+		for _, msg := range skippedFiles {
+			log.Printf("- %s\n", msg)
+		}
+		log.Println() // Add a blank line for separation
+	}
+
+	if *verbose && len(files) > 0 {
+		log.Printf("Copied %d files:\n", len(files))
+		for _, file := range files {
+			log.Printf("- %s\n", file.path)
+		}
+		log.Println() // Add a blank line for separation
+	}
+
+	// --- Output Generation ---
 	if len(files) == 0 {
 		log.Println("No files matched. No output generated.")
 		return

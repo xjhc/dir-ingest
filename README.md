@@ -2,29 +2,31 @@
 
 A minimal Go CLI to combine a directory's source files into a single text block for LLMs.
 
-It's dependency-free, pipes to your clipboard, and smartly includes common file types by default.
-
 ## Get Started
 
 **1. Install** (Requires [Go](https://go.dev/doc/install) 1.22+)
 ```bash
 go install github.com/xjhc/dir-ingest@latest
 ```
-(Ensure `$HOME/go/bin` is in your `PATH`)
+
+It uses the [go-gitignore](https://github.com/sabhiram/go-gitignore) library (used in Terraform) to parse `.gitignore` files.
 
 **2. Run**
 ```bash
-# Ingest current dir, format as Markdown, and copy to clipboard
+# Ingest current dir, using the local .gitignore for exclusions
 dir-ingest -m | wl-copy # Linux (Wayland)
 dir-ingest -m | xclip -selection clipboard # Linux (X11)
 dir-ingest -m | pbcopy # macOS
 dir-ingest -m | Set-Clipboard # Windows
 
-# Ingest a specific directory and put flags after the path
+# Ingest a specific directory
 dir-ingest /path/to/project -m
 
-# Prepend a path to all filenames in the output
-dir-ingest -p my-project/
+# Use a different ignore file (like .dockerignore)
+dir-ingest -g .dockerignore -m
+
+# Ingest only recognized source code files
+dir-ingest -x -m | pbcopy
 ```
 
 > **Note:** Status messages (like skipped files or the final count) are printed to your terminal's standard error stream. This is intentional, so they appear on your screen for feedback but are **not** copied to your clipboard, which only receives the clean file content.
@@ -33,14 +35,13 @@ dir-ingest -p my-project/
 
 | Flag | Description | Default |
 | :--- | :--- | :--- |
+| `-g` | Path to a `.gitignore`-style file for exclusion rules. | `./.gitignore` |
+| `-x` | Only include files with recognized source code extensions. | `false` |
+| `-xe` | Extra file extensions to exclude (e.g., `.log`). Can be used multiple times. | |
+| `-s` | Max file size in KB. | `25` |
 | `-m` | Format as Markdown. | `false` |
 | `-c` | Format as Claude XML. | `false` |
 | `-p` | Prepend a path to all filenames in the output. | |
-| `-i` | Glob pattern to include files (overrides defaults). Can be used multiple times. | (see below) |
-| `-e` | Glob pattern to exclude files/dirs. Can be used multiple times. | |
-| `-xe` | File extension to exclude (e.g., `.html`). Can be used multiple times. | |
-| `-s` | Max file size in KB. | `25` |
-
-**Default included extensions:** `.go`, `.py`, `.js`, `.ts`, `.tsx`, `.java`, `.c`, `.h`, `.cpp`, `.cs`, `.rs`, `.rb`, `.php`, `.swift`, `.kt`, `.kts`, `.scala`, `.pl`, `.sh`, `.html`, `.css`, `.scss`, `.json`, `.yaml`, `.yml`, `.xml`, `.toml`, `.md`, `.txt`, `.sql`
+| `-v` | Verbose output: displays all files that were copied. | `false` |
 
 Inspiration for this tool comes from [gitingest](https://github.com/cyclotruc/gitingest) by [@cyclotruc](https://github.com/cyclotruc).

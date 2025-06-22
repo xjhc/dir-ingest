@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -25,6 +26,15 @@ func (s *stringSlice) Set(value string) error {
 type fileData struct {
 	path    string
 	content []byte
+}
+
+type Node struct {
+	Name     string
+	Children map[string]*Node
+}
+
+func NewNode(name string) *Node {
+	return &Node{Name: name, Children: make(map[string]*Node)}
 }
 
 var (
@@ -238,11 +248,7 @@ func main() {
 	}
 
 	if *verbose && len(files) > 0 {
-		log.Printf("Copied %d files:\n", len(files))
-		for _, file := range files {
-			log.Printf("- %s\n", file.path)
-		}
-		log.Println() // Add a blank line for separation
+		printFileTree(os.Stderr, filepath.Base(absRootDir), files)
 	}
 
 	// --- Output Generation ---
@@ -261,7 +267,64 @@ func main() {
 		buildStandardText(&b, files, *prependPath)
 	}
 	fmt.Print(b.String())
-	log.Printf("✓ Ingested %d files.", len(files))
+
+	if !*verbose {
+		log.Printf("✓ Ingested %d files.", len(files))
+	}
+}
+
+// printFileTree prints a tree-like structure of the ingested files to the writer.
+func printFileTree(writer io.Writer, rootName string, files []fileData) {
+	root := NewNode(rootName)
+	for _, file := range files {
+		parts := strings.Split(file.path, "/")
+		currentNode := root
+		for _, part := range parts {
+			if _, ok := currentNode.Children[part]; !ok {
+				currentNode.Children[part] = NewNode(part)
+			}
+			currentNode = currentNode.Children[part]
+		}
+	}
+
+	fmt.Fprintf(writer, "Ingested %d files\n", len(files))
+	fmt.Fprintf(writer, "└── %s/\n", rootName)
+	printChildren(writer, root, "    ")
+}
+
+// printChildren is a recursive helper for printFileTree.
+func printChildren(writer io.Writer, node *Node, prefix string) {
+	keys := make([]string, 0, len(node.Children))
+	for k := range node.Children {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for i, key := range keys {
+		child := node.Children[key]
+		isLast := i == len(keys)-1
+
+		connector := "├── "
+		if isLast {
+			connector = "└── "
+		}
+
+		name := child.Name
+		hasChildren := len(child.Children) > 0
+		if hasChildren {
+			name += "/"
+		}
+
+		fmt.Fprintf(writer, "%s%s%s\n", prefix, connector, name)
+
+		if hasChildren {
+			newPrefix := prefix + "│   "
+			if isLast {
+				newPrefix = prefix + "    "
+			}
+			printChildren(writer, child, newPrefix)
+		}
+	}
 }
 
 func getLanguageHint(path string) string {
@@ -281,7 +344,6 @@ func buildMarkdown(b *strings.Builder, files []fileData, prependPath string) {
 		lang := getLanguageHint(file.path)
 		b.WriteString(fmt.Sprintf("```%s path=%s\n", lang, outputPath))
 		b.Write(file.content)
-		// Ensure content ends with a newline before the closing fence
 		if len(file.content) > 0 && file.content[len(file.content)-1] != '\n' {
 			b.WriteString("\n")
 		}
